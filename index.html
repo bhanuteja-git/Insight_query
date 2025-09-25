@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightQuery - AI BI Dashboard (Large Data)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #loadingIndicator, #uploadingIndicator { display: none; }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1); width: 36px; height: 36px;
+            border-radius: 50%; border-left-color: #3B82F6;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .table-container { max-height: 300px; overflow-y: auto; }
+        #biChartContainer { min-height: 300px; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4">
+
+    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-2xl w-full max-w-5xl">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl sm:text-4xl font-bold text-gray-800">InsightQuery 📊 (Large Data)</h1>
+            <p class="text-gray-600 mt-2">Upload your CSV or JSON and ask questions!</p>
+        </header>
+
+        <div class="mb-6 p-4 border border-dashed border-gray-300 rounded-lg">
+            <h2 class="text-xl font-semibold text-gray-700 mb-2">1. Upload Your Data File</h2>
+            <input type="file" id="dataFile" accept=".csv,.json" class="block w-full text-sm text-gray-500
+                file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0
+                file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700
+                hover:file:bg-blue-100 mb-2"/>
+            <button id="uploadButton" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition-all">
+                Upload and Process File
+            </button>
+            <div id="uploadingIndicator" class="flex items-center mt-2"><div class="spinner !w-5 !h-5 !border-2"></div><p class="ml-2 text-sm text-gray-600">Uploading & Processing...</p></div>
+            <div id="fileInfo" class="mt-2 text-sm text-green-700"></div>
+        </div>
+
+        <div id="querySection" class="mb-6 p-4 border border-gray-200 rounded-lg hidden">
+            <h2 class="text-xl font-semibold text-gray-700 mb-2">2. Ask About Your Data</h2>
+            <div class="flex flex-col sm:flex-row gap-2">
+                <input type="text" id="nlqInput" placeholder="e.g., 'Total sales by category?'" class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                <button id="queryButtonFE" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition-all">
+                    Get Insights
+                </button>
+            </div>
+            <div id="loadingIndicator" class="flex items-center mt-2"><div class="spinner !w-5 !h-5 !border-2"></div><p class="ml-2 text-sm text-gray-600">AI is Thinking...</p></div>
+        </div>
+        
+        <div id="resultsSection" class="hidden">
+             <div id="errorMessage" class="hidden mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg"></div>
+            <div id="summaryContainer" class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg min-h-[50px]">
+                <h3 class="font-semibold text-blue-700 mb-1">AI Summary:</h3>
+                <p id="summaryText" class="text-gray-700 text-sm">Insights will appear here.</p>
+            </div>
+            <div id="biChartContainer" class="bg-gray-50 p-4 rounded-lg shadow-inner mb-6 hidden"><canvas id="biChart"></canvas></div>
+            <div id="tableDisplaySection" class="hidden"><h3 class="text-lg font-semibold text-gray-700 mb-2">Data Table:</h3><div id="dataTableContainer" class="table-container border rounded-lg"><table class="min-w-full text-sm text-left text-gray-500"><thead id="dataTableHeader" class="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0"></thead><tbody id="dataTableBody"></tbody></table></div></div>
+        </div>
+    </div>
+
+    <footer class="mt-8 text-center text-gray-500 text-sm"><p>AI-Powered BI Dashboard Demo. Use responsibly.</p></footer>
+
+    <script>
+        // Get all DOM elements
+        const dataFileInput = document.getElementById('dataFile'); 
+        const uploadButton = document.getElementById('uploadButton');
+        const uploadingIndicator = document.getElementById('uploadingIndicator');
+        const fileInfoDiv = document.getElementById('fileInfo');
+        const querySection = document.getElementById('querySection');
+        const nlqInput = document.getElementById('nlqInput');
+        const queryButtonFE = document.getElementById('queryButtonFE'); 
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultsSection = document.getElementById('resultsSection');
+        const summaryText = document.getElementById('summaryText');
+        const biChartContainer = document.getElementById('biChartContainer');
+        const chartCanvas = document.getElementById('biChart');
+        const tableDisplaySection = document.getElementById('tableDisplaySection');
+        const dataTableHeader = document.getElementById('dataTableHeader');
+        const dataTableBody = document.getElementById('dataTableBody');
+        const errorMessageDiv = document.getElementById('errorMessage');
+
+        let currentChart = null;
+        const BACKEND_URL = 'http://127.0.0.1:5001';
+
+        function displayError(message) {
+            errorMessageDiv.textContent = message;
+            errorMessageDiv.classList.remove('hidden');
+        }
+
+        function clearError() {
+            errorMessageDiv.classList.add('hidden');
+        }
+
+        // --- UPLOAD ---
+        uploadButton.addEventListener('click', async () => {
+            const file = dataFileInput.files[0];
+            if (!file) { displayError("Please select a CSV or JSON file."); return; }
+            clearError(); uploadingIndicator.style.display = 'flex';
+            fileInfoDiv.textContent = ''; querySection.classList.add('hidden');
+            resultsSection.classList.add('hidden'); if(currentChart) currentChart.destroy();
+
+            const formData = new FormData(); formData.append('file', file);
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/upload`, { method: 'POST', body: formData });
+                if (!response.ok) { // Check before .json()
+                    let errorMsg = `Server error ${response.status}`;
+                    try { const errorResult = await response.json(); errorMsg = errorResult.error || errorMsg; } 
+                    catch { const text = await response.text(); errorMsg = text.startsWith("<!doctype") ? `HTML Error (Status: ${response.status}). Check backend logs.` : text; }
+                    throw new Error(errorMsg);
+                }
+                const result = await response.json(); // Now parse
+                fileInfoDiv.textContent = `Processed: ${result.filename} (${result.rowCount} rows).`;
+                querySection.classList.remove('hidden');
+            } catch (error) { displayError(`Upload failed: ${error.message}`); } 
+            finally { uploadingIndicator.style.display = 'none'; }
+        });
+
+        // --- QUERY ---
+        queryButtonFE.addEventListener('click', handleQuery);
+        nlqInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleQuery(); });
+
+        async function handleQuery() {
+            const userQuery = nlqInput.value.trim();
+            if (!userQuery) { displayError("Please enter a question."); return; }
+            clearError(); loadingIndicator.style.display = 'flex';
+            resultsSection.classList.remove('hidden'); summaryText.textContent = "AI is analyzing...";
+            tableDisplaySection.classList.add('hidden'); biChartContainer.classList.add('hidden');
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/query`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: userQuery }),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error);
+
+                summaryText.textContent = result.narrative_summary;
+                const suggestion = result.llm_suggestion;
+                const data = result.processed_data;
+                const columns = result.data_columns;
+
+                // <<<< CHANGE: Logic to handle "none" or missing chart info >>>>
+                const chartConfig = suggestion ? suggestion.chart_suggestions : null;
+                const chartType = chartConfig ? chartConfig.chart_type : 'none';
+                const xAxis = chartConfig ? chartConfig.x_axis : null;
+                const yAxis = chartConfig ? chartConfig.y_axis : null;
+
+                if (data && data.length > 0) {
+                    if (chartType === 'table') {
+                        displayTable(data, columns);
+                    } else if (chartType !== 'none' && xAxis && yAxis && data[0][xAxis] !== undefined && data[0][yAxis] !== undefined) {
+                        const labels = data.map(item => item[xAxis]);
+                        const dataValues = data.map(item => item[yAxis]);
+                        renderChart({ labels, data: dataValues, chartType, label: chartConfig.title });
+                    } else if (chartType !== 'none') {
+                        // Got some data, but chart info is bad -> show as table
+                         summaryText.textContent += " (Could not generate chart, showing as table.)";
+                         displayTable(data, columns);
+                    } // If chartType is 'none', we do nothing - just show summary
+                } else if (chartType === 'none') {
+                    // No data, and chartType is 'none' - just show summary (already done)
+                    if(currentChart) currentChart.destroy();
+                } else {
+                     // No data, but chart was expected - show 'No Data' chart
+                     summaryText.textContent += " (No data matched for this query.)";
+                     if(currentChart) currentChart.destroy();
+                     renderChart({ labels: ["No Data"], data: [0], chartType: 'bar', label: 'No Data' });
+                }
+                // <<<< END OF CHANGE >>>>
+
+            } catch (error) {
+                console.error("Query Error:", error);
+                displayError(`Query failed: ${error.message}`);
+                if (currentChart) currentChart.destroy();
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+
+        // --- RENDER/DISPLAY ---
+        function renderChart(config) {
+            biChartContainer.classList.remove('hidden'); tableDisplaySection.classList.add('hidden');
+            if (currentChart) currentChart.destroy();
+            currentChart = new Chart(chartCanvas.getContext('2d'), {
+                type: config.chartType || 'bar',
+                data: {
+                    labels: config.labels,
+                    datasets: [{
+                        label: config.label || 'Data', data: config.data,
+                        backgroundColor: ['rgba(54, 162, 235, 0.6)','rgba(255, 99, 132, 0.6)','rgba(75, 192, 192, 0.6)','rgba(255, 206, 86, 0.6)','rgba(153, 102, 255, 0.6)','rgba(255, 159, 64, 0.6)'],
+                        borderColor: ['rgba(54, 162, 235, 1)','rgba(255, 99, 132, 1)','rgba(75, 192, 192, 1)','rgba(255, 206, 86, 1)','rgba(153, 102, 255, 1)','rgba(255, 159, 64, 1)'],
+                        borderWidth: 1
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+            });
+        }
+
+        function displayTable(data, columns) {
+            biChartContainer.classList.add('hidden'); tableDisplaySection.classList.remove('hidden');
+            if (currentChart) currentChart.destroy();
+            dataTableHeader.innerHTML = ''; dataTableBody.innerHTML = '';
+            const headerRow = document.createElement('tr');
+            columns.forEach(col => {
+                const th = document.createElement('th'); th.className = 'px-6 py-3 text-left';
+                th.textContent = col; headerRow.appendChild(th);
+            });
+            dataTableHeader.appendChild(headerRow);
+            data.forEach(row => {
+                const tr = document.createElement('tr'); tr.className = 'bg-white border-b hover:bg-gray-50';
+                columns.forEach(col => {
+                    const td = document.createElement('td'); td.className = 'px-6 py-4 whitespace-nowrap';
+                    td.textContent = row[col] !== null && row[col] !== undefined ? String(row[col]) : '';
+                    tr.appendChild(td);
+                });
+                dataTableBody.appendChild(tr);
+            });
+        }
+    </script>
+</body>
+</html>
